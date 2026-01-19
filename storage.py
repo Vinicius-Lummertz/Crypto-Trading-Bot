@@ -32,6 +32,10 @@ class PortfolioManager:
                 return structure
         return structure
 
+    def update_wallet_summary(self, equity):
+        self.data['wallet_summary']['current_equity'] = equity
+        self.save_data()
+
     def _migrate_data(self):
         """Adiciona o campo 'highest_price' em posições antigas para o Trailing Stop"""
         changed = False

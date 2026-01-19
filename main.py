@@ -149,6 +149,49 @@ class BotController:
         
         self.db.remove_position(symbol)
 
+    def update_financials(self):
+        # 1. Pega Saldo USDT Livre na Binance
+        usdt_free = 0.0
+        if not config.SIMULATION_MODE:
+            acc = self.api.get_account()
+            if acc:
+                for b in acc['balances']:
+                    if b['asset'] == 'USDT':
+                        usdt_free = float(b['free'])
+                        break
+        else:
+            # Em simulação, estimamos o livre subtraindo o alocado do inicial
+            invested = sum(p['amount_usdt'] for p in self.db.data['active_positions'].values())
+            usdt_free = max(0, 100.0 - invested) # Assumindo 100 inicial
+
+        # 2. Soma Valor das Posições (Mark-to-Market)
+        positions_value = 0.0
+        positions = self.db.data['active_positions']
+        
+        for symbol, data in positions.items():
+            current_price = self.api.get_price(symbol)
+            if current_price:
+                # Estima quantidade de moedas
+                coin_qty = data['amount_usdt'] / data['buy_price']
+                positions_value += (coin_qty * current_price)
+            else:
+                positions_value += data['amount_usdt'] # Fallback
+        
+        total_equity = usdt_free + positions_value
+        
+        # 3. Salva e Loga
+        self.db.update_wallet_summary(total_equity)
+        
+        # Log histórico se mudou significativamente
+        fluctuation = 0.0
+        if self.last_equity > 0:
+            fluctuation = ((total_equity - self.last_equity) / self.last_equity) * 100
+            
+        self.db.log_history(total_equity, f"{fluctuation:+.2f}%")
+        self.last_equity = total_equity
+        
+        return total_equity
+
     # --- SCANNER ---
     def scan_market(self):
         print("\n🔍 ESCANEANDO (Filtros: RSI < 30 + Tendência + RVOL)...")
@@ -284,6 +327,8 @@ class BotController:
         
         while True:
             try:
+
+                equity = self.update_financials()    
                 # 1. Auditoria e Trailing Stop
                 self.manage_portfolio()
                 
