@@ -1,0 +1,12 @@
+# Segredos
+.env
+
+# Logs e Dados Locais
+portfolio_data.json
+bot_events.log
+__pycache__/
+
+venv
+.venv
+/venv
+./venv
