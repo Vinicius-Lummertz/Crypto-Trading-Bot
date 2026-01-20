@@ -2,14 +2,24 @@ import time
 import config
 from storage import PortfolioManager
 from binance_api import BinanceClient
-from datetime import datetime
-
+from telegram_notifier import TelegramNotifier
+from trade_executor import TradeExecutor
+from datetime import datetime, timedelta, timezone
+import math
 
 class BotController:
     def __init__(self):
         self.db = PortfolioManager()
         self.api = BinanceClient()
+        self.notifier = TelegramNotifier(config.TELEGRAM_BOT_TOKEN, config.TELEGRAM_CHAT_ID)
+        self.executor = TradeExecutor(self.api, self.db, self.notifier)
+        
         self.last_equity = 0.0
+        self.alert_tracker = set() # Para evitar spam de alertas de PnL
+        
+        # Cooldown System
+        self.cooldowns = {} 
+        self.COOLDOWN_TIME_MINUTES = 30
 
     # --- LÓGICA DE INDICADORES ---
     def calculate_rsi(self, prices, period=14):
@@ -46,46 +56,48 @@ class BotController:
         if avg_vol == 0: return 0.0
         return current_vol / avg_vol
 
-    def find_zombie_position(self):
+    def find_zombie_position(self, candidate_rsi=100):
         """
         Procura uma posição 'Zumbi' para sacrificar.
-        Critério: Segurando há mais de 4 horas E PnL Negativo.
+        Se o RSI da nova oportunidade for MUITO baixo (<18), ignora o tempo de casa.
         """
         positions = self.db.data['active_positions']
         worst_symbol = None
         worst_pnl = 0.0
         
-        # Horário agora (UTC) para comparação justa
-        now = datetime.utcnow() # JSON salva em BRT, mas vamos simplificar o delta
-        # Nota: Idealmente converteríamos tudo para objetos datetime conscientes,
-        # mas para estimativa de horas, comparar timestamps simples funciona se o formato for consistente.
+        # Define urgência
+        # Padrão: 2 horas de paciência
+        # Urgência (RSI < 18): 0 horas de paciência (Vende qualquer coisa negativa)
+        min_hours = 2.0
+        if candidate_rsi < 18.0:
+            min_hours = 0.0
+            print(f"   🚨 URGÊNCIA DETECTADA (RSI {candidate_rsi:.1f}): Ignorando tempo mínimo de posição.")
+
+        now = datetime.now(timezone.utc)
         
         for symbol, data in positions.items():
             # 1. Calcula tempo de casa
             try:
-                # O formato salvo no storage.py é '%Y-%m-%d %H:%M:%S'
-                # Precisamos calcular quantas horas se passaram
                 entry_dt = datetime.strptime(data['entry_time'], '%Y-%m-%d %H:%M:%S')
-                # Ajuste fuso horário manual se necessário, mas vamos focar na diferença bruta
-                # Se entry_time é BRT (UTC-3) e now é UTC, temos que ajustar
-                entry_dt_adjusted = entry_dt + timedelta(hours=3) # Converte BRT visual para UTC real
+                # Adiciona info de timezone se o python reclamar de offset-naive vs aware
+                # Assumindo que o storage salva sem timezone info explícito mas é UTC/BRT
+                entry_dt = entry_dt.replace(tzinfo=datetime.now(timezone.utc)) 
                 
-                duration = (now - entry_dt_adjusted).total_seconds() / 3600 # Horas
+                duration = (now - entry_dt).total_seconds() / 3600 
             except:
                 duration = 0
 
             # 2. Calcula PnL atual
             current_price = self.api.get_price(symbol)
             if not current_price: continue
+            
             pnl_pct = ((current_price - data['buy_price']) / data['buy_price']) * 100
 
-            # CRITÉRIO DE CORTE:
-            # Se tem mais de 3 horas de vida E está no prejuízo
-            if duration > 3.0 and pnl_pct < 0:
+            # CRITÉRIO DE CORTE DINÂMICO:
+            # Se tem mais tempo que o minimo exigido E está no prejuízo
+            if duration >= min_hours and pnl_pct < -0.05: # -0.05% margem para não vender 0x0
                 print(f"   💀 Candidato a Zumbi: {symbol} (PnL {pnl_pct:.2f}% | {duration:.1f}h)")
                 
-                # Queremos eliminar o que tem o PIOR desempenho ou MAIOR tempo
-                # Aqui vamos priorizar quem está dando mais prejuízo para estancar sangria
                 if pnl_pct < worst_pnl:
                     worst_pnl = pnl_pct
                     worst_symbol = symbol
@@ -94,60 +106,98 @@ class BotController:
 
     # --- LÓGICA DE TRAILING STOP & GESTÃO ---
     def manage_portfolio(self):
+        # 1. Atualiza Auditoria Financeira
+        # (Se você já adicionou a chamada no loop run(), pode remover essa linha aqui para não duplicar, 
+        # mas deixar aqui não faz mal, só gasta uma chamada de API a mais)
+        # self.update_financials() 
+
         positions = self.db.data['active_positions']
-        if not positions: return
+        # Cria uma cópia da lista para poder deletar itens durante o loop sem quebrar
+        items = list(positions.items()) 
 
-        print(f"\n📋 GESTÃO DE CARTEIRA ({len(positions)} Ativos)")
-        print(f"{'MOEDA':<10} | {'ENTRADA':<10} | {'ATUAL':<10} | {'MÁXIMO':<10} | {'PNL %':<8} | {'STATUS'}")
-        print("-" * 75)
-
-        for symbol in list(positions.keys()): # Lista auxiliar para poder deletar
-            data = positions[symbol]
+        for symbol, data in items:
             current_price = self.api.get_price(symbol)
             if not current_price: continue
 
-            # 1. Atualiza Trailing Stop (Highest Price)
-            # Se o preço atual for maior que o histórico, atualizamos o topo
-            if current_price > data['highest_price']:
-                data['highest_price'] = current_price
-                self.db.save_data() # Salva o novo topo
+            # 1. Atualiza Topo Histórico (High Water Mark)
+            highest = data['highest_price']
+            if current_price > highest:
+                highest = current_price
+                self.db.update_position_high(symbol, highest)
+                # print(f"   📈 {symbol} renovou máxima: ${highest}")
 
-            # 2. Cálculos
+            # 2. CÁLCULO DO STOP DINÂMICO (A Mágica acontece aqui)
             buy_price = data['buy_price']
-            highest_price = data['highest_price']
             
+            # Quanto a moeda já subiu no máximo desde a compra?
+            max_profit_pct = (highest - buy_price) / buy_price
+            
+            # Lógica de "Afrouxar o Cinto":
+            # Nível 1: Subiu pouco (< 3%) -> Stop Curto (3%) para proteger capital.
+            # Nível 2: Subiu médio (> 3%) -> Stop Médio (4.5%).
+            # Nível 3: Explodiu (> 7%) -> Stop Longo (6%) para aguentar volatilidade.
+            
+            if max_profit_pct > 0.07:    # Se já subiu mais de 7%
+                current_trailing_pct = 0.06  # Aguenta queda de 6%
+                status_label = "MOONSHOT 🚀"
+            elif max_profit_pct > 0.03:  # Se já subiu mais de 3%
+                current_trailing_pct = 0.045 # Aguenta queda de 4.5%
+                status_label = "TENDÊNCIA 📈"
+            else:                        # Se acabou de comprar ou está no zero
+                current_trailing_pct = 0.025 # Stop curto de 2.5% (Mão de Ferro)
+                status_label = "RISCO 🛡️"
+
+            # Calcula o Preço de Gatilho
+            drop_price = highest * (1 - current_trailing_pct)
+            
+            # Calcula recuo atual para mostrar no log
+            drop_pct = ((highest - current_price) / highest) * 100
+
+            # Atualiza log visual no terminal (opcional, mas bom pra ver o status)
+            # print(f"   Update {symbol}: Topo ${highest:.4f} | Stop ${drop_price:.4f} ({status_label})")
+
+            # 3. VERIFICAÇÃO DE VENDA (Trailing Stop)
+            if current_price < drop_price:
+                print(f"   📉 STOP ACIONADO PARA {symbol}!")
+                print(f"      Topo: ${highest} | Preço Atual: ${current_price}")
+                print(f"      Queda: {drop_pct:.2f}% (Limite Dinâmico: {current_trailing_pct*100}%)")
+                
+                # Executa venda
+                self.close_position(symbol, current_price, "Trailing Stop Dinâmico")
+            
+            # 4. ALERTA DE PNL (Telegram)
+            # Avisa se passar de 3% ou 5% de lucro (apenas uma vez por nível)
             pnl_pct = ((current_price - buy_price) / buy_price) * 100
             
-            # Cálculo da Queda do Topo (Drawdown)
-            drop_from_high = (current_price - highest_price) / highest_price
+            if pnl_pct >= 5.0:
+                alert_key = f"{symbol}_5pct"
+                if alert_key not in self.alert_tracker:
+                    self.notifier.send_message(f"🚀 **{symbol}** explodiu! Lucro atual: **{pnl_pct:.2f}%**")
+                    self.alert_tracker.add(alert_key)
+                    self.alert_tracker.add(f"{symbol}_3pct") # Assume que já avisou do 3%
             
-            # Corzinha para o log ficar bonito
-            color = "\033[92m" if pnl_pct >= 0 else "\033[91m"
-            reset = "\033[0m"
-            
-            print(f"{symbol:<10} | {buy_price:<10.5f} | {current_price:<10.5f} | {highest_price:<10.5f} | {color}{pnl_pct:+.2f}%{reset} | ", end="")
-
-            # 3. Decisão de Venda (Trailing Stop)
-            # Se cair X% (definido no config) do topo máximo atingido, VENDE.
-            # Isso protege o lucro se subir muito e cair, e estanca o prejuízo se cair direto da entrada.
-            if drop_from_high <= -config.TRAILING_DROP_PERCENT:
-                print("🛑 TRAILING STOP")
-                self.close_position(symbol, current_price, f"Caiu {drop_from_high*100:.2f}% do topo")
-            else:
-                print(f"HOLD (Stop a {highest_price * (1 - config.TRAILING_DROP_PERCENT):.5f})")
+            elif pnl_pct >= 3.0:
+                alert_key = f"{symbol}_3pct"
+                if alert_key not in self.alert_tracker:
+                    self.notifier.send_message(f"📈 **{symbol}** está indo bem! Lucro atual: **{pnl_pct:.2f}%**")
+                    self.alert_tracker.add(alert_key)
 
     def close_position(self, symbol, price, reason):
-        if not config.SIMULATION_MODE:
-            # Lógica simples de venda total. Em prod real, precisa tratar 'lot size'
-            # Tentar vender via API. Se falhar (ex: precisão), avisa mas remove do banco para destravar
-            self.api.place_order(symbol, 'SELL', 0) # Qty 0 aqui é simbólico, precisaria da lógica de saldo
-            
-        # PnL Realizado
-        data = self.db.data['active_positions'][symbol]
-        profit_usd = data['amount_usdt'] * ((price - data['buy_price']) / data['buy_price'])
-        print(f"   💰 VENDIDO: {symbol} | Lucro: ${profit_usd:.2f} | Motivo: {reason}")
+        # Delega para o Executor
+        success = self.executor.sell_position(symbol, reason)
         
-        self.db.remove_position(symbol)
+        if success:
+            # Limpa tracker de alertas
+            self.alert_tracker.discard(f"{symbol}_3pct")
+            self.alert_tracker.discard(f"{symbol}_5pct")
+
+            # Desativa Cooldown se tiver lucro (opcional, mas bom pra rodar capital)
+            # Mas se foi SWAP urgente, mantemos cooldown pra não comprar a mesma coisa ruim de volta
+            if "SWAP" in reason:
+                 # Adiciona Cooldown
+                cooldown_until = datetime.now(timezone.utc) + timedelta(minutes=self.COOLDOWN_TIME_MINUTES)
+                self.cooldowns[symbol] = cooldown_until
+                print(f"   ❄️ COOLDOWN: {symbol} bloqueada por {self.COOLDOWN_TIME_MINUTES} min.")
 
     def update_financials(self):
         # 1. Pega Saldo USDT Livre na Binance
@@ -177,7 +227,7 @@ class BotController:
             else:
                 positions_value += data['amount_usdt'] # Fallback
         
-        total_equity = usdt_free + positions_value
+        total_equity = positions_value
         
         # 3. Salva e Loga
         self.db.update_wallet_summary(total_equity)
@@ -261,7 +311,7 @@ class BotController:
                     # Se falhou por saldo E o sinal é MUITO bom (RSI < 20), tenta trocar
                     if rsi < 20:
                         print(f"   🔄 Sem saldo para {sym}. Procurando Zumbis para troca...")
-                        zombie = self.find_zombie_position()
+                        zombie = self.find_zombie_position(candidate_rsi=rsi)
                         
                         if zombie:
                             print(f"   ⚔️ TROCA TÁTICA: Vendendo {zombie} para comprar {sym}")
@@ -317,6 +367,9 @@ class BotController:
             if not res: return False
         
         self.db.add_position(symbol, price, amount, rsi)
+        
+        # Notifica Telegram
+        self.notifier.send_alert(symbol, "RSI Oversold", "BUY", price, f"📉 RSI: {rsi:.1f}")
 
         return True
 

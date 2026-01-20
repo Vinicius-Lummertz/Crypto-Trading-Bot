@@ -1,0 +1,29 @@
+
+> frontend@0.0.0 build
+> vite build
+
+[36mvite v7.3.1 [32mbuilding client environment for production...[36m[39m
+transforming...
+[32m✓[39m 40 modules transformed.
+[31m✗[39m Build failed in 1.01s
+[31merror during build:
+[31msrc/api.js (3:7): Identifier "axios" has already been declared[31m
+file: [36mC:/Users/lumvi/OneDrive/Área de Trabalho/Projetos/Bobera/Dex v2/frontend/src/api.js:3:7[31m
+[33m
+1: import axios from 'axios';
+2: 
+3: import axios from 'axios';
+          ^
+4: 
+5: const API_URL = 'http://localhost:8000/api';
+[31m
+    at getRollupError (file:///C:/Users/lumvi/OneDrive/%C3%81rea%20de%20Trabalho/Projetos/Bobera/Dex%20v2/frontend/node_modules/rollup/dist/es/shared/parseAst.js:401:41)
+    at error (file:///C:/Users/lumvi/OneDrive/%C3%81rea%20de%20Trabalho/Projetos/Bobera/Dex%20v2/frontend/node_modules/rollup/dist/es/shared/parseAst.js:397:42)
+    at Module.error (file:///C:/Users/lumvi/OneDrive/%C3%81rea%20de%20Trabalho/Projetos/Bobera/Dex%20v2/frontend/node_modules/rollup/dist/es/shared/node-entry.js:17022:16)
+    at Module.addImport (file:///C:/Users/lumvi/OneDrive/%C3%81rea%20de%20Trabalho/Projetos/Bobera/Dex%20v2/frontend/node_modules/rollup/dist/es/shared/node-entry.js:17593:22)
+    at ImportDeclaration.initialise (file:///C:/Users/lumvi/OneDrive/%C3%81rea%20de%20Trabalho/Projetos/Bobera/Dex%20v2/frontend/node_modules/rollup/dist/es/shared/node-entry.js:13084:28)
+    at convertNode (file:///C:/Users/lumvi/OneDrive/%C3%81rea%20de%20Trabalho/Projetos/Bobera/Dex%20v2/frontend/node_modules/rollup/dist/es/shared/node-entry.js:16418:10)
+    at convertNodeList (file:///C:/Users/lumvi/OneDrive/%C3%81rea%20de%20Trabalho/Projetos/Bobera/Dex%20v2/frontend/node_modules/rollup/dist/es/shared/node-entry.js:16428:38)
+    at Array.program (file:///C:/Users/lumvi/OneDrive/%C3%81rea%20de%20Trabalho/Projetos/Bobera/Dex%20v2/frontend/node_modules/rollup/dist/es/shared/node-entry.js:16278:21)
+    at convertNode (file:///C:/Users/lumvi/OneDrive/%C3%81rea%20de%20Trabalho/Projetos/Bobera/Dex%20v2/frontend/node_modules/rollup/dist/es/shared/node-entry.js:16417:28)
+    at convertProgram (file:///C:/Users/lumvi/OneDrive/%C3%81rea%20de%20Trabalho/Projetos/Bobera/Dex%20v2/frontend/node_modules/rollup/dist/es/shared/node-entry.js:15658:12)[39m

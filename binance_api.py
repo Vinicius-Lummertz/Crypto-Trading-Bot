@@ -15,7 +15,7 @@ class BinanceClient:
         
         if signed:
             params['timestamp'] = int(time.time() * 1000)
-            params['recvWindow'] = 10000
+            params['recvWindow'] = 60000
             query = urlencode(params)
             sig = hmac.new(SECRET_KEY.encode('utf-8'), query.encode('utf-8'), hashlib.sha256).hexdigest()
             url = f"{BASE_URL}{endpoint}?{query}&signature={sig}"
@@ -59,3 +59,18 @@ class BinanceClient:
             'quoteOrderQty': round(qty_usdt, 2)
         }
         return self._send('POST', '/api/v3/order', params, signed=True)
+    
+    def get_symbol_step_size(self, symbol):
+        """Busca a precisão (LOT_SIZE) exigida pela Binance para o par."""
+        # Endpoint público, não gasta peso de API assinada
+        data = self._send('GET', '/api/v3/exchangeInfo', {'symbol': symbol})
+        
+        if not data or 'symbols' not in data:
+            return None
+
+        # Procura o filtro LOT_SIZE dentro da resposta gigante
+        for f in data['symbols'][0]['filters']:
+            if f['filterType'] == 'LOT_SIZE':
+                return float(f['stepSize'])
+        
+        return None
