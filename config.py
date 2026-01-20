@@ -20,11 +20,34 @@ AMOUNT_TO_TRADE = 15.0       # Valor base por trade
 
 # Indicadores (RSI)
 RSI_PERIOD = 14
-RSI_BUY_THRESHOLD = 30       # Compra abaixo de 30
+RSI_BUY_THRESHOLD = 23       # Compra abaixo de 20
 
-# Trailing Stop (A Mágica Nova)
-# Se o preço cair 3% em relação ao topo máximo atingido, vende.
-TRAILING_DROP_PERCENT = 0.03 
+# Trailing Stop Dinâmico (Escadinha / Ladder Strategy)
+# 1. O Berço (Proteção): Lucro < 3% -> Stop curto de 2.5%
+LADDER_1_THRESHOLD = 0.03
+LADDER_1_STOP = 0.025
+
+# 2. A Tendência (Confirmação): Lucro entre 3% e 7% -> Stop médio de 4.5%
+LADDER_2_THRESHOLD = 0.07
+LADDER_2_STOP = 0.045
+
+# 3. O Moonshot (Mão de Diamante): Lucro > 7% -> Stop longo de 6.0%
+LADDER_3_STOP = 0.060
+
+# Stop Loss e Take Profit (Segurança Adicional)
+STOP_LOSS_PERCENT = 0.05     # 5% de prejuízo máximo (Emergência)
+TAKE_PROFIT_PERCENT = 0.10   # 10% de lucro (Alvo fixo opcional)
+
+# === DUAL STRATEGY SYSTEM ===
+# Estratégia de Scalping Agressivo (trades rápidos e frequentes)
+SCALP_ENABLED = True          # Habilita estratégia de scalping
+SCALP_RSI_MAX = 40            # RSI máximo para entrar em scalp (mais permissivo)
+SCALP_STOP_LOSS = 0.01        # Stop loss fixo para scalp: -1%
+SCALP_TAKE_PROFIT = 0.025     # Take profit fixo para scalp: +2.5%
+
+# NOTA: Sem limite de posições! Sistema Zombie troca por melhores oportunidades
+# MAX_SCALP_POSITIONS = 3       # (REMOVIDO - usa saldo disponível)
+# MAX_CONSERVATIVE_POSITIONS = 3 # (REMOVIDO - usa saldo disponível)
 
 # Blacklist
 IGNORED_COINS = [
@@ -35,3 +58,15 @@ IGNORED_COINS = [
 # Sistema
 PORTFOLIO_FILE = 'portfolio_data.json'
 SIMULATION_MODE = False
+
+# Configurações de Scan
+KLINE_LIMIT = 110
+SCAN_INTERVAL = 60
+
+# Telegram
+TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
+TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
+TELEGRAM_ENABLED = True
+
+if TELEGRAM_ENABLED and (not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID):
+    print("⚠️ AVISO: Configuração do Telegram habilitada mas chaves não encontradas no .env")
